@@ -8,7 +8,7 @@ from app.api.routes import auth as auth_router
 from app.api.routes import users as users_router
 from app.api.routes import uploads as uploads_router
 from app.api.routes import jobs as jobs_router
-from app.api import processing as processing_router
+from app.api.routes import processing as processing_router
 from app.api.routes import conversions as conversions_router
 import uvicorn
 import logging
@@ -38,8 +38,8 @@ app = FastAPI(
 # Add middleware (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[str(o) for o in settings.ALLOWED_ORIGINS],
-    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+    allow_origins=["*"] if settings.DEBUG or settings.ENVIRONMENT == "development" else [str(o) for o in settings.ALLOWED_ORIGINS],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],

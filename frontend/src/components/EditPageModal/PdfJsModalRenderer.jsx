@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import * as pdfjs from "pdfjs-dist";
 
-export const PdfJsModalRenderer = ({ fileUrl, pageIndex, rotation }) => {
+export const PdfJsModalRenderer = ({ fileUrl, pageIndex, rotation, cropMarginPercent = 0 }) => {
     const canvasRef = useRef(null);
 
     useEffect(() => {
@@ -28,11 +28,26 @@ export const PdfJsModalRenderer = ({ fileUrl, pageIndex, rotation }) => {
                 canvas.width = viewport.width;
 
                 await page.render({ canvasContext: context, viewport }).promise;
-            } catch (e) { /* Console logs removed */ }
+            } catch (error) {
+                console.error("Failed to render PDF page", error);
+            }
         };
         renderPage();
         return () => { destroyed = true; if(page) page.cleanup(); };
     }, [fileUrl, pageIndex, rotation]);
 
-    return <canvas ref={canvasRef} className="shadow-2xl border border-gray-700" />;
+    return (
+        <div className="relative inline-flex">
+            <canvas ref={canvasRef} className="shadow-2xl border border-gray-700" />
+            {cropMarginPercent > 0 && (
+                <>
+                    <div className="pointer-events-none absolute inset-x-0 top-0 bg-black/60" style={{ height: `${cropMarginPercent}%` }} />
+                    <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-black/60" style={{ height: `${cropMarginPercent}%` }} />
+                    <div className="pointer-events-none absolute left-0 bg-black/60" style={{ top: `${cropMarginPercent}%`, bottom: `${cropMarginPercent}%`, width: `${cropMarginPercent}%` }} />
+                    <div className="pointer-events-none absolute right-0 bg-black/60" style={{ top: `${cropMarginPercent}%`, bottom: `${cropMarginPercent}%`, width: `${cropMarginPercent}%` }} />
+                    <div className="pointer-events-none absolute border-2 border-purple-400" style={{ inset: `${cropMarginPercent}%` }} />
+                </>
+            )}
+        </div>
+    );
 };

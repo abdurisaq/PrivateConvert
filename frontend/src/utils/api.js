@@ -146,7 +146,7 @@ export const processingApi = {
     const formData = new FormData();
     formData.append('file', file);
 
-    return fetchWrapper('/processing/upload/', {
+    return fetchWrapper('/processing/upload', {
       method: 'POST',
       body: formData,
     });
@@ -172,7 +172,7 @@ export const processingApi = {
 
   /** Download final processed file */
   downloadResult: (jobId) =>
-    fetchWrapper(`/processing/jobs/${jobId}/download/`, {
+    fetchWrapper(`/processing/jobs/${jobId}/download`, {
       responseType: 'blob',
     }),
 
@@ -183,7 +183,7 @@ export const processingApi = {
     }),
 
     processPdf: (recipePayload) => {
-        return fetchWrapper('/processing/pdf/merge/', { // New endpoint
+        return fetchWrapper('/processing/pdf/merge', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(recipePayload),

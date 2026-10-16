@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, defaultDropAnimationSideEffects } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, rectSortingStrategy } from "@dnd-kit/sortable";
 import * as pdfjs from "pdfjs-dist";
@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from "uuid";
 import { SortablePage } from "../components/PageThumbnail/SortablePage";
 import { DragOverlayContent } from "../components/PageThumbnail/DragOverlayContent";
 import { EditPageModal } from "../components/EditPageModal/EditPageModal";
-import { mockUploadToBackend, arrayMoveMultiple } from "../utils/pdfUtils";
+import { arrayMoveMultiple } from "../utils/pdfUtils";
 
 import { processingApi } from '../utils/api';
 
@@ -23,7 +23,7 @@ const dropAnimation = {
     sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.3' } } }),
 };
 
-export default function ProcessingPage() {
+export default function ProcessingPage({ initialPdfFile = null }) {
     const [files, setFiles] = useState({});
     const [pages, setPages] = useState([]);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -31,23 +31,25 @@ export default function ProcessingPage() {
     const [editingPageId, setEditingPageId] = useState(null);
     const [activeDragId, setActiveDragId] = useState(null);
     const [lastSelectedId, setLastSelectedId] = useState(null);
+    const hasInitializedInitialFile = useRef(false);
 
     const pagesRef = useRef(pages);
     useEffect(() => { pagesRef.current = pages; }, [pages]);
+    const filesRef = useRef(files);
+    useEffect(() => { filesRef.current = files; }, [files]);
 
     const sensors = useSensors(
         useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
         useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
     );
 
-    //when done revoke
     useEffect(() => {
         return () => {
-            Object.values(files).forEach(fileInfo => {
+            Object.values(filesRef.current).forEach(fileInfo => {
                 if (fileInfo.url) URL.revokeObjectURL(fileInfo.url);
             });
         };
-    }, [files]);
+    }, []);
 
     const handleToggleSelection = useCallback((id, isShift, isCtrl) => {
         const pagesArray = pagesRef.current;
@@ -91,33 +93,74 @@ export default function ProcessingPage() {
         setPages((items) => arrayMoveMultiple(items, idsToMove, active.id, over.id));
     }, [pages, selectedPageIds]);
 
-    const handleFileChange = async (e) => {
-        const selectedFiles = Array.from(e.target.files || []).filter(f => f.type === "application/pdf");
+    const processPdfFiles = async (selectedFiles) => {
         if (selectedFiles.length === 0) return;
-
         const uploadToast = toast.loading("Uploading and processing...");
-        const newFilesMap = { ...files };
-        const newPages = [...pages];
 
-        for (const file of selectedFiles) {
-            const fileURL = URL.createObjectURL(file);
-            const serverId = await mockUploadToBackend(file);
-
-            newFilesMap[serverId] = { name: file.name, url: fileURL, serverFileId: serverId };
-
+        try {
+          for (const selectedFile of selectedFiles) {
+            if (!selectedFile.name.toLowerCase().endsWith(".pdf")) {
+                throw new Error(`${selectedFile.name} is not a PDF file`);
+            }
+            const fileURL = URL.createObjectURL(selectedFile);
             try {
-                const pdf = await pdfjs.getDocument({ url: fileURL }).promise;
+                const pdf = await pdfjs.getDocument({ data: await selectedFile.arrayBuffer() }).promise;
+                const upload = await processingApi.uploadFile(selectedFile);
+                const serverId = upload.fileId;
+                const fileInfo = {
+                    name: selectedFile.name,
+                    url: fileURL,
+                    serverFileId: serverId,
+                };
+                setFiles((current) => ({ ...current, [serverId]: fileInfo }));
+                const addedPages = [];
                 for (let i = 0; i < pdf.numPages; i++) {
-                    newPages.push({ id: uuidv4(), fileId: serverId, pageIndex: i, rotation: 0, crop: null });
+                    const pdfPage = await pdf.getPage(i + 1);
+                    const viewport = pdfPage.getViewport({ scale: 1 });
+                    const [originX, originY] = pdfPage.view;
+                    addedPages.push({
+                        id: uuidv4(),
+                        fileId: serverId,
+                        pageIndex: i,
+                        rotation: 0,
+                        crop: null,
+                        cropMarginPercent: 0,
+                        originX,
+                        originY,
+                        widthPoints: viewport.width,
+                        heightPoints: viewport.height,
+                    });
                 }
-            } catch (err) { console.error(err); }
+                setPages((current) => [...current, ...addedPages]);
+            } catch (error) {
+                URL.revokeObjectURL(fileURL);
+                throw error;
+            }
+          }
+          toast.success("Pages ready!");
+        } catch (error) {
+            toast.error(`Upload failed: ${error.message}`);
+        } finally {
+            toast.dismiss(uploadToast);
         }
-
-        setFiles(newFilesMap);
-        setPages(newPages);
-        toast.dismiss(uploadToast);
-        toast.success("Pages ready!");
     };
+
+    const handleFileChange = async (e) => {
+        const selectedFiles = Array.from(e.target.files || []).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+        e.target.value = "";
+        await processPdfFiles(selectedFiles);
+    };
+
+    useEffect(() => {
+        if (initialPdfFile && !hasInitializedInitialFile.current) {
+            hasInitializedInitialFile.current = true;
+            setFiles({});
+            setPages([]);
+            setSelectedPageIds([]);
+            setEditingPageId(null);
+            processPdfFiles([initialPdfFile]);
+        }
+    }, [initialPdfFile]);
 
     const handleRemovePage = useCallback((id) => {
         setPages(prev => prev.filter(p => p.id !== id));
@@ -135,42 +178,64 @@ export default function ProcessingPage() {
         setPages(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
     }, []);
 
-    const handleSubmit = async () => {
-    if (pages.length === 0) return toast.error("No pages to process");
-    setIsProcessing(true);
-    
-    // --- PAYLOAD CREATION ---
-    const apiPayload = {
-        jobId: uuidv4(),
-        // timestamp: new Date().toISOString(), // Keep date logic on backend for consistency
-        outputFilename: "merged_document.pdf",
-        pages: pages.map(p => ({
-            sourceFileId: files[p.fileId].serverFileId, // Correctly references the uploaded file
-            sourcePageIndex: p.pageIndex,
-            transformations: { rotate: p.rotation, crop: p.crop }
-        }))
+    const clearWorkspace = () => {
+        Object.values(filesRef.current).forEach((fileInfo) => {
+            if (fileInfo.url) URL.revokeObjectURL(fileInfo.url);
+        });
+        setPages([]);
+        setFiles({});
+        setSelectedPageIds([]);
+        setLastSelectedId(null);
     };
-    // -------------------------
 
-    try {
-        // CALL THE NEW API FUNCTION
-        const response = await processingApi.processPdf(apiPayload);
+    const handleSubmit = async () => {
+        if (pages.length === 0) return toast.error("No pages to process");
+        setIsProcessing(true);
 
-        // Depending on your backend, 'response' might be a Job ID or a direct download link
-        if (response.jobId) {
-            toast.success(`Processing started. Job ID: ${response.jobId}`);
-            // You would likely start polling for status here
-        } else {
-            toast.success("Merged PDF Downloaded!");
-            // Handle download logic if the backend returns a direct file/URL
+        try {
+            const response = await processingApi.processPdf({
+                outputFilename: "merged_document.pdf",
+                pages: pages.map((page) => ({
+                    sourceFileId: files[page.fileId].serverFileId,
+                    sourcePageIndex: page.pageIndex,
+                    transformations: { rotate: page.rotation, crop: page.crop },
+                })),
+            });
+
+            if (!response.jobId) {
+                throw new Error("The server did not return a PDF job ID");
+            }
+
+            let job;
+            const deadline = Date.now() + 5 * 60 * 1000;
+            do {
+                await new Promise((resolve) => window.setTimeout(resolve, 1000));
+                job = await processingApi.getStatus(response.jobId);
+                if (job.status === "failed" || job.status === "cancelled") {
+                    throw new Error(job.error_message || `PDF job ${job.status}`);
+                }
+            } while (job.status !== "completed" && Date.now() < deadline);
+
+            if (job.status !== "completed") {
+                throw new Error("PDF processing timed out. Check the Jobs page for status.");
+            }
+
+            const result = await processingApi.downloadResult(response.jobId);
+            const downloadUrl = URL.createObjectURL(result);
+            const link = document.createElement("a");
+            link.href = downloadUrl;
+            link.download = job.output_filename || "merged_document.pdf";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+            toast.success("Your PDF is ready and downloading.");
+        } catch (error) {
+            toast.error(`Processing failed: ${error.message}`);
+        } finally {
+            setIsProcessing(false);
         }
-
-    } catch (error) {
-        toast.error(`Processing failed: ${error.message}`);
-    } finally {
-        setIsProcessing(false);
-    }
-};
+    };
 
     const activeDragIds = activeDragId
         ? (selectedPageIds.includes(activeDragId) ? selectedPageIds : [activeDragId])
@@ -184,10 +249,10 @@ export default function ProcessingPage() {
                 <div className="flex justify-between items-end mb-8 border-b border-gray-800 pb-4">
                     <div>
                         <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-400">PDF Studio Pro</h1>
-                        <p className="text-gray-400 text-sm mt-1">Mock Backend Integrated • Multi-Select & Drag • Transformations</p>
+                        <p className="text-gray-400 text-sm mt-1">Upload, reorder, rotate, and export PDF pages</p>
                     </div>
                     {pages.length > 0 && (
-                        <button onClick={() => { setPages([]); setFiles({}); setSelectedPageIds([]); setLastSelectedId(null); }} className="text-red-400 hover:text-red-300 text-sm flex items-center gap-1">
+                        <button onClick={clearWorkspace} className="text-red-400 hover:text-red-300 text-sm flex items-center gap-1">
                             <Trash2 size={14} /> Clear Workspace
                         </button>
                     )}

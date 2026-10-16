@@ -61,3 +61,5 @@ test-results/
 __pycache__/
 *.py[cod]
 *$py.class
+
+backend/extras/

@@ -1,5 +1,4 @@
 import { X, RotateCw, Crop, Edit2, Info } from "lucide-react";
-import toast from "react-hot-toast";
 import { PdfJsModalRenderer } from "./PdfJsModalRenderer";
 
 export function EditPageModal({ page, file, onClose, onEditChange }) {
@@ -9,6 +8,21 @@ export function EditPageModal({ page, file, onClose, onEditChange }) {
     const handleRotate = () => {
         const newRotation = (currentRotation + 90) % 360;
         onEditChange(page.id, { rotation: newRotation });
+    };
+
+    const handleCropMarginChange = (event) => {
+        const marginPercent = Number(event.target.value);
+        const horizontalInset = page.widthPoints * marginPercent / 100;
+        const verticalInset = page.heightPoints * marginPercent / 100;
+        onEditChange(page.id, {
+            cropMarginPercent: marginPercent,
+            crop: marginPercent === 0 ? null : {
+                x: page.originX + horizontalInset,
+                y: page.originY + verticalInset,
+                width: page.widthPoints - horizontalInset * 2,
+                height: page.heightPoints - verticalInset * 2,
+            },
+        });
     };
 
     return (
@@ -27,9 +41,27 @@ export function EditPageModal({ page, file, onClose, onEditChange }) {
                         <button onClick={handleRotate} className="flex items-center gap-3 p-4 bg-gray-700 hover:bg-purple-600 rounded-lg transition-all text-white shadow-lg">
                             <RotateCw size={20} /> <span className="font-medium">Rotate 90°</span>
                         </button>
-                        <button onClick={() => toast("Cropping requires backend library implementation")} className="flex items-center gap-3 p-4 bg-gray-700 hover:bg-gray-600 rounded-lg transition-all text-gray-300">
-                            <Crop size={20} /> <span className="font-medium">Crop (WIP)</span>
-                        </button>
+                        <div className="rounded-lg bg-gray-700 p-4 text-white">
+                            <div className="flex items-center justify-between">
+                                <label htmlFor="crop-margin" className="flex items-center gap-2 font-medium">
+                                    <Crop size={18} /> Crop margins
+                                </label>
+                                <span className="text-sm text-purple-300">{page.cropMarginPercent || 0}%</span>
+                            </div>
+                            <input
+                                id="crop-margin"
+                                type="range"
+                                min="0"
+                                max="40"
+                                step="1"
+                                value={page.cropMarginPercent || 0}
+                                onChange={handleCropMarginChange}
+                                className="mt-3 w-full accent-purple-500"
+                            />
+                            <p className="mt-2 text-xs text-gray-300">
+                                Trim equally from each edge. Set to 0% to reset.
+                            </p>
+                        </div>
                         <div className="mt-auto p-4 bg-blue-900/20 border border-blue-500/30 rounded-lg">
                             <p className="text-xs text-blue-200 flex items-start gap-2">
                                 <Info size={16} className="shrink-0 text-blue-300"/> Changes are saved to the recipe and applied on the server during the final merge.
@@ -38,7 +70,12 @@ export function EditPageModal({ page, file, onClose, onEditChange }) {
                     </div>
                     {/* Renderer */}
                     <div className="flex-grow p-8 overflow-auto flex items-center justify-center bg-[url('https://www.transparenttextures.com/patterns/dark-matter.png')]">
-                         <PdfJsModalRenderer fileUrl={file.url} pageIndex={page.pageIndex} rotation={currentRotation} />
+                         <PdfJsModalRenderer
+                            fileUrl={file.url}
+                            pageIndex={page.pageIndex}
+                            rotation={currentRotation}
+                            cropMarginPercent={page.cropMarginPercent || 0}
+                        />
                     </div>
                 </div>
                 <div className="p-4 border-t border-gray-800 flex justify-end">
