@@ -2,10 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { FileUp, Zap, Clock, CheckCircle, Wand2 } from 'lucide-react';
 import { conversionApi } from '../utils/api';
-import { useAuthStore } from '../utils/authStore';
 
 export default function DashboardPage() {
-  const { user } = useAuthStore();
   const [stats, setStats] = useState(null);
   const [recentJobs, setRecentJobs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -37,7 +35,7 @@ export default function DashboardPage() {
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-purple-400">Welcome, {user?.email}!</h1>
+        <h1 className="text-3xl font-bold text-purple-400">Private Converter</h1>
         <p className="text-gray-400 mt-2">Manage your file conversions</p>
       </div>
 

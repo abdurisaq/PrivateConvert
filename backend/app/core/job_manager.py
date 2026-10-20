@@ -195,7 +195,7 @@ class JobManager:
 
     async def _process_pdf_studio(self, job_uuid: uuid.UUID, job: Job):
         """Apply a PDF Studio recipe and save its output in the standard results directory."""
-        recipe_path = settings.TEMP_DIR / str(job.user_id) / str(job.id) / "recipe.json"
+        recipe_path = settings.TEMP_DIR / str(job.id) / "recipe.json"
         with recipe_path.open(encoding="utf-8") as recipe_file:
             recipe = json.load(recipe_file)
 

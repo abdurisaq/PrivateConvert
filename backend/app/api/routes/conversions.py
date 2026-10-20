@@ -1,11 +1,9 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, Form
-from sqlmodel import Session
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from app.core.utils import get_supported_formats
 from app.core.config import settings
-from app.api.deps import get_db, CurrentUser, SessionDep
+from app.api.deps import SessionDep
 from app.models import Job
 from app.core.job_manager import manager as job_manager
-import os
 import logging
 from pathlib import Path
 
@@ -22,25 +20,21 @@ def get_formats():
 @router.post('/upload/')
 def upload_conversion(
     session: SessionDep,
-    current_user: CurrentUser,
     file: UploadFile = File(...),
     input_format: str = Form(...),
     output_format: str = Form(...),
-    
 ):
     """Upload a file for conversion."""
-    logger.info(f"Upload request from user {current_user.id}: {file.filename} ({input_format}->{output_format})")
-    if not file or not input_format or not output_format:
+    filename = Path(file.filename or "").name
+    if not filename or not input_format or not output_format:
         raise HTTPException(status_code=400, detail='Missing required fields')
 
     size = 0
-    # Create job first
     job = Job(
-        input_filename=file.filename,
-        output_filename=f"{file.filename.rsplit('.',1)[0]}.{output_format}",
+        input_filename=filename,
+        output_filename=f"{Path(filename).stem}.{output_format.lower()}",
         input_format=input_format.lower(),
         output_format=output_format.lower(),
-        user_id=current_user.id,
         status='pending',
         progress=0
     )
@@ -48,10 +42,9 @@ def upload_conversion(
     session.commit()
     session.refresh(job)
 
-    # Save file to uploads/{job.id}/filename
     upload_dir = Path(settings.UPLOAD_DIR) / str(job.id)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_dir / file.filename
+    dest = upload_dir / filename
     
     try:
         with open(dest, 'wb') as buffer:
@@ -65,28 +58,19 @@ def upload_conversion(
                     raise HTTPException(status_code=413, detail='File too large')
                 buffer.write(chunk)
 
-        if current_user.storage_used + size > current_user.storage_quota:
-            dest.unlink(missing_ok=True)
-            session.delete(job)
-            session.commit()
-            raise HTTPException(status_code=413, detail='Storage quota exceeded')
-
         job.file_size = size
         session.add(job)
         session.commit()
 
-        # Enqueue for processing
         logger.info(f"Job {job.id} created, enqueueing for processing")
         job_manager.enqueue(str(job.id))
         logger.info(f"Job {job.id} enqueued successfully")
 
-        # Return in format frontend expects
         return {"data": {"jobId": str(job.id)}}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Upload error: {str(e)}", exc_info=True)
-        # Cleanup on error
         if dest.exists():
             dest.unlink()
         session.delete(job)

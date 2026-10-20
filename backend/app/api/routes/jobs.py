@@ -1,134 +1,97 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
-from typing import List, Optional
-from app.core.job_manager import manager as job_manager
-import asyncio
-from pathlib import Path
+import shutil
 import uuid
+from pathlib import Path
+from typing import Optional
 
-from app.api.deps import get_db, CurrentUser, SessionDep
-from app.models import Job, User
-from app.schemas.job import JobCreate, JobRead, JobUpdate
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from sqlmodel import select
+
+from app.api.deps import SessionDep
 from app.core.config import settings
+from app.core.job_manager import manager as job_manager
+from app.models import Job
+from app.schemas.job import JobCreate, JobRead, JobUpdate
 
 router = APIRouter()
 
 
-def _get_job(session: Session, job_id: str) -> Job | None:
+def _get_job(session: SessionDep, job_id: str) -> Job | None:
     try:
-        job_uuid = uuid.UUID(job_id)
+        return session.get(Job, uuid.UUID(job_id))
     except ValueError:
         return None
-    return session.get(Job, job_uuid)
 
 
 @router.post("/", response_model=JobRead)
-def create_job(
-    job_in: JobCreate,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Create a new conversion job."""
-    job = Job(**job_in.dict(), user_id=current_user.id)
+def create_job(job_in: JobCreate, session: SessionDep):
+    job = Job(**job_in.dict())
     session.add(job)
     session.commit()
     session.refresh(job)
     return job
-    
+
 
 @router.get("/")
-def list_jobs(
-    session: SessionDep,
-    current_user: CurrentUser,
-    status: Optional[str] = None,
-):
-    """List jobs for the current user or all jobs for admins."""
+def list_jobs(session: SessionDep, status: Optional[str] = None):
     statement = select(Job)
-    if not current_user.is_superuser:
-        statement = statement.where(Job.user_id == current_user.id)
     if status:
         statement = statement.where(Job.status == status)
-    jobs = session.exec(statement).all()
-    return {"results": jobs}
+    return {"results": session.exec(statement).all()}
 
 
 @router.get("/{job_id}", response_model=JobRead)
-def get_job(
-    job_id: str,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Get a specific job."""
+def get_job(job_id: str, session: SessionDep):
     job = _get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Not authorized")
     return job
 
 
 @router.post("/{job_id}/start", response_model=JobRead)
-async def start_job(
-    job_id: str,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Start processing a conversion job."""
+def start_job(job_id: str, session: SessionDep):
     job = _get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Not authorized")
     if job.status != "pending":
-        raise HTTPException(status_code=400, detail=f"Cannot start job in {job.status} status")
-    
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot start job in {job.status} status",
+        )
+
     job.status = "processing"
     session.add(job)
     session.commit()
     session.refresh(job)
-    
-    # schedule job via shared manager
     job_manager.enqueue(job_id)
     return job
 
 
 @router.get("/{job_id}/download/")
-def download_job_result(
-    job_id: str,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Download the converted file result."""
+def download_job_result(job_id: str, session: SessionDep):
     job = _get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    if job.status != 'completed':
-        raise HTTPException(status_code=400, detail='Job not completed')
-    
-    from fastapi.responses import FileResponse
-    result_path = Path(settings.RESULTS_DIR) / str(job_id) / job.output_filename
-    if not result_path.exists():
-        raise HTTPException(status_code=404, detail='Result file not found')
-    return FileResponse(str(result_path), filename=job.output_filename)
+    if job.status != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed")
+
+    result_path = settings.RESULTS_DIR / str(job.id) / job.output_filename
+    if not result_path.is_file():
+        raise HTTPException(status_code=404, detail="Result file not found")
+    return FileResponse(result_path, filename=job.output_filename)
 
 
 @router.post("/{job_id}/cancel")
-def cancel_job(
-    job_id: str,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Cancel a conversion job."""
+def cancel_job(job_id: str, session: SessionDep):
     job = _get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    if job.status in ['completed', 'failed', 'cancelled']:
-        raise HTTPException(status_code=400, detail=f'Cannot cancel job in {job.status} status')
-    job.status = 'cancelled'
+    if job.status in {"completed", "failed", "cancelled"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel job in {job.status} status",
+        )
+    job.status = "cancelled"
     session.add(job)
     session.commit()
     session.refresh(job)
@@ -136,20 +99,12 @@ def cancel_job(
 
 
 @router.patch("/{job_id}", response_model=JobRead)
-def update_job(
-    job_id: str,
-    job_update: JobUpdate,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Update a job's details."""
+def update_job(job_id: str, job_update: JobUpdate, session: SessionDep):
     job = _get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    for k, v in job_update.dict(exclude_none=True).items():
-        setattr(job, k, v)
+    for key, value in job_update.dict(exclude_none=True).items():
+        setattr(job, key, value)
     session.add(job)
     session.commit()
     session.refresh(job)
@@ -157,30 +112,19 @@ def update_job(
 
 
 @router.delete("/{job_id}")
-def delete_job(
-    job_id: str,
-    session: SessionDep,
-    current_user: CurrentUser
-):
-    """Delete a job and its associated files."""
+def delete_job(job_id: str, session: SessionDep):
     job = _get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Clean up files
-    import shutil
-    job_upload_dir = Path(settings.UPLOAD_DIR) / str(current_user.id) / str(job_id)
-    if job_upload_dir.exists():
-        shutil.rmtree(job_upload_dir)
-    
-    job_result_dir = Path(settings.RESULTS_DIR) / str(job_id)
-    if job_result_dir.exists():
-        shutil.rmtree(job_result_dir)
-    
-    # Delete from database
+
+    for directory in (
+        settings.UPLOAD_DIR / str(job.id),
+        settings.RESULTS_DIR / str(job.id),
+        settings.TEMP_DIR / str(job.id),
+    ):
+        if directory.exists():
+            shutil.rmtree(directory)
+
     session.delete(job)
     session.commit()
-    
     return {"status": "deleted"}

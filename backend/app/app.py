@@ -1,18 +1,16 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from app.core.config import settings
-from app.core.database import engine, Base, init_db
+from app.core.database import init_db
 from app.core.job_manager import manager as job_manager
-from app.api.routes import auth as auth_router
-from app.api.routes import users as users_router
-from app.api.routes import uploads as uploads_router
 from app.api.routes import jobs as jobs_router
 from app.api.routes import processing as processing_router
 from app.api.routes import conversions as conversions_router
-import uvicorn
 import logging
 import sys
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -25,51 +23,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(
     title=settings.APP_NAME,
-    description="File conversion service with authentication",
+    description="Local file conversion service",
     version="1.0.0",
     debug=settings.DEBUG,
 )
 
-# Add middleware (CORS)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"] if settings.DEBUG or settings.ENVIRONMENT == "development" else [str(o) for o in settings.ALLOWED_ORIGINS],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Include routers
-app.include_router(auth_router.router, prefix=settings.API_V1_STR + "/auth", tags=["authentication"])
-app.include_router(users_router.router, prefix=settings.API_V1_STR + "/users", tags=["users"])
-app.include_router(uploads_router.router, prefix=settings.API_V1_STR + "/uploads", tags=["uploads"])
 app.include_router(jobs_router.router, prefix=settings.API_V1_STR + "/jobs", tags=["jobs"])
 app.include_router(conversions_router.router, prefix=settings.API_V1_STR + "/conversions", tags=["conversions"])
 app.include_router(processing_router.router, prefix=settings.API_V1_STR + "/processing", tags=["processing"])
 
-@app.get("/")
-async def root():
-    return {"message": f"{settings.APP_NAME} API", "environment": settings.ENVIRONMENT}
+frontend_dir = Path(__file__).resolve().parent.parent / "static"
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "debug": settings.DEBUG}
 
 
+@app.get("/", include_in_schema=False)
+@app.get("/{file_path:path}", include_in_schema=False)
+async def serve_frontend(file_path: str = ""):
+    if file_path == "api" or file_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    index_path = frontend_dir / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Frontend build not found. Run the development launcher to build it.",
+        )
+
+    requested_path = (frontend_dir / file_path).resolve()
+    if frontend_dir.resolve() not in requested_path.parents and requested_path != frontend_dir.resolve():
+        raise HTTPException(status_code=404, detail="Not found")
+    if requested_path.is_file():
+        return FileResponse(requested_path)
+    if Path(file_path).suffix:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(index_path)
+
+
 @app.on_event("startup")
 async def _startup():
     logger.info("Application starting up")
-    # ensure DB tables exist and default user is created
     init_db()
     logger.info("Database initialized")
-    # start async job workers
     await job_manager.start()
     logger.info(f"Job manager started with {job_manager.concurrency} workers")
 

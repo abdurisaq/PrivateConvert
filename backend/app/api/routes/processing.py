@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from typing import List, Optional
 from pydantic import BaseModel, validator
 from sqlmodel import Session
-from app.api.deps import SessionDep, CurrentUser
+from app.api.deps import SessionDep
 from app.core.config import settings
 from app.core.utils import get_supported_formats
 from app.models import Job
@@ -71,7 +71,6 @@ class ProcessOperationPayload(BaseModel):
 # -------- Specific route (must come before the catch‑all) --------
 @router.post('/pdf/merge', status_code=status.HTTP_200_OK)
 def merge_pdf(
-    current_user: CurrentUser,
     session: SessionDep,
     recipe: PdfMergeRecipe = Body(...),
 ):
@@ -80,7 +79,7 @@ def merge_pdf(
     if not output_filename.lower().endswith(".pdf"):
         output_filename = f"{output_filename}.pdf"
 
-    user_temp_dir = settings.TEMP_DIR / str(current_user.id)
+    temp_dir = settings.TEMP_DIR
     source_paths = {}
     normalized_pages = []
     for page in recipe.pages:
@@ -88,7 +87,7 @@ def merge_pdf(
             source_id = str(uuid.UUID(page.sourceFileId))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid source file ID") from exc
-        source_path = user_temp_dir / source_id
+        source_path = temp_dir / source_id
         if source_id not in source_paths:
             if not source_path.is_dir():
                 raise HTTPException(status_code=404, detail="Uploaded PDF not found")
@@ -106,12 +105,11 @@ def merge_pdf(
         output_filename=output_filename,
         input_format="pdf",
         output_format="pdf",
-        user_id=current_user.id,
         file_size=sum(path.stat().st_size for path in source_paths.values()),
         status="pending",
         progress=0,
     )
-    job_dir = user_temp_dir / str(job.id)
+    job_dir = temp_dir / str(job.id)
     job_dir.mkdir(parents=True, exist_ok=True)
     recipe_path = job_dir / "recipe.json"
     recipe_data = {
@@ -137,7 +135,7 @@ def merge_pdf(
         logger.exception("Could not enqueue PDF Studio job %s", job.id)
         raise HTTPException(status_code=503, detail="PDF processing service is unavailable") from exc
 
-    logger.info("PDF Studio job %s queued for user %s", job.id, current_user.id)
+    logger.info("PDF Studio job %s queued", job.id)
     return {
         "jobId": str(job.id),
         "status": job.status,
@@ -146,16 +144,15 @@ def merge_pdf(
 
 @router.post('/upload')
 def upload_file(
-    current_user: CurrentUser,
     file: UploadFile = File(...),
 ):
-    """Store one PDF for a user's PDF Studio workspace."""
+    """Store one PDF in the local PDF Studio workspace."""
     original_filename = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
     if not original_filename or not original_filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     file_id = str(uuid.uuid4())
-    target = settings.TEMP_DIR / str(current_user.id) / file_id
+    target = settings.TEMP_DIR / file_id
     target.mkdir(parents=True, exist_ok=True)
     path = target / original_filename
     written = 0
@@ -171,7 +168,7 @@ def upload_file(
         target.rmdir()
         raise
 
-    logger.info("PDF Studio upload %s stored for user %s", file_id, current_user.id)
+    logger.info("PDF Studio upload %s stored", file_id)
     return {"fileId": file_id, "filename": original_filename, "size": written}
 
 
@@ -191,34 +188,27 @@ def get_operations(type: str):
 
 @router.get('/jobs/{job_id}')
 def processing_job_status(
-    job_id: str, 
-    current_user: CurrentUser, 
-    session: SessionDep
+    job_id: str,
+    session: SessionDep,
 ):
-    logger.info(f"Status check for job {job_id} by user {current_user.id}")
+    logger.info(f"Status check for job {job_id}")
     job = _get_job(session, job_id)
     if not job:
         logger.warning(f"Job {job_id} not found")
         raise HTTPException(status_code=404, detail='Job not found')
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail='Not authorized')
     return job
 
 
 @router.get('/jobs/{job_id}/download')
 def processing_job_download(
-    job_id: str, 
-    current_user: CurrentUser, 
-    session: SessionDep
+    job_id: str,
+    session: SessionDep,
 ):
-    logger.info(f"Download requested for job {job_id} by user {current_user.id}")
+    logger.info(f"Download requested for job {job_id}")
     job = _get_job(session, job_id)
     if not job:
         logger.warning(f"Job {job_id} not found")
         raise HTTPException(status_code=404, detail='Job not found')
-    if job.user_id != current_user.id and not current_user.is_superuser:
-        logger.warning(f"User {current_user.id} not authorized to download job {job_id}")
-        raise HTTPException(status_code=403, detail='Not authorized')
     if job.status != "completed":
         raise HTTPException(status_code=409, detail="PDF job is not complete")
     
