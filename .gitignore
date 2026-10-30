@@ -23,6 +23,7 @@ data/
 # Frontend build
 frontend/dist/
 frontend/build/
+backend/static/
 
 # IDE
 .vscode/
