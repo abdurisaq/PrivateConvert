@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import ConvertPage from './pages/ConvertPage';
 import JobsPage from './pages/JobsPage';
 import ProcessingPage from './pages/ProcessingPage';
+import PipelinePage from './pages/PipelinePage';
 
 function App() {
   return (
@@ -14,6 +15,7 @@ function App() {
         <Route path="/dashboard" element={<Navigate to="/" replace />} />
         <Route path="/convert" element={<ConvertPage />} />
         <Route path="/process" element={<ProcessingPage />} />
+        <Route path="/pipelines" element={<PipelinePage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

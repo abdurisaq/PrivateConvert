@@ -1,5 +1,5 @@
 import { Outlet, Link } from 'react-router-dom';
-import { Home, Upload, FileText } from 'lucide-react';
+import { Home, Upload, FileText, Workflow } from 'lucide-react';
 
 export default function Layout() {
   return (
@@ -24,6 +24,20 @@ export default function Layout() {
           >
             <Upload size={20} />
             <span>Convert</span>
+          </Link>
+          <Link
+            to="/pipelines"
+            className="flex items-center gap-3 px-6 py-3 rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            <Workflow size={20} />
+            <span>File Operations</span>
+          </Link>
+          <Link
+            to="/process"
+            className="flex items-center gap-3 px-6 py-3 rounded-lg hover:bg-gray-700 transition-colors"
+          >
+            <FileText size={20} />
+            <span>PDF Editor</span>
           </Link>
           <Link
             to="/jobs"
