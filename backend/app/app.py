@@ -5,9 +5,12 @@ from fastapi.responses import FileResponse
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.job_manager import manager as job_manager
+from app.core.job_retention import clear_temporary_files, purge_expired_jobs
 from app.api.routes import jobs as jobs_router
 from app.api.routes import processing as processing_router
 from app.api.routes import conversions as conversions_router
+from app.api.routes import pipelines as pipelines_router
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -36,6 +39,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(jobs_router.router, prefix=settings.API_V1_STR + "/jobs", tags=["jobs"])
 app.include_router(conversions_router.router, prefix=settings.API_V1_STR + "/conversions", tags=["conversions"])
 app.include_router(processing_router.router, prefix=settings.API_V1_STR + "/processing", tags=["processing"])
+app.include_router(pipelines_router.router, prefix=settings.API_V1_STR + "/processing/pipelines", tags=["pipelines"])
 
 frontend_dir = Path(__file__).resolve().parent.parent / "static"
 
@@ -61,7 +65,8 @@ async def serve_frontend(file_path: str = ""):
     if frontend_dir.resolve() not in requested_path.parents and requested_path != frontend_dir.resolve():
         raise HTTPException(status_code=404, detail="Not found")
     if requested_path.is_file():
-        return FileResponse(requested_path)
+        media_type = "text/javascript" if requested_path.suffix.lower() == ".mjs" else None
+        return FileResponse(requested_path, media_type=media_type)
     if Path(file_path).suffix:
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(index_path)
@@ -72,6 +77,8 @@ async def _startup():
     logger.info("Application starting up")
     init_db()
     logger.info("Database initialized")
+    await asyncio.to_thread(clear_temporary_files)
+    await asyncio.to_thread(purge_expired_jobs)
     await job_manager.start()
     logger.info(f"Job manager started with {job_manager.concurrency} workers")
 

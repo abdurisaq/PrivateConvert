@@ -66,11 +66,13 @@ class JobManager:
         self.concurrency = concurrency or settings.MAX_CONCURRENT_PROCESSES
         self.queue: asyncio.Queue[str] = None  # Will be initialized on startup
         self.workers: list[asyncio.Task] = []
+        self._queued_ids: set[str] = set()
+        self._retention_task: asyncio.Task | None = None
         self._running = False
 
     async def _worker(self, worker_id: int):
         logger.info(f"Worker {worker_id} started")
-        while self._running:
+        while self._running or (self.queue is not None and not self.queue.empty()):
             try:
                 job_id = await self.queue.get()
                 logger.info(f"Worker {worker_id} processing job {job_id}")
@@ -83,7 +85,7 @@ class JobManager:
                         with Session(engine) as session:
                             job_uuid = uuid.UUID(job_id) if isinstance(job_id, str) else job_id
                             job = session.get(Job, job_uuid)
-                            if job:
+                            if job and job.status != "cancelled":
                                 job.status = "failed"
                                 job.error_message = str(e)
                                 session.add(job)
@@ -91,6 +93,7 @@ class JobManager:
                     except Exception as db_error:
                         logger.error(f"Failed to update job status: {str(db_error)}")
                 finally:
+                    self._queued_ids.discard(job_id)
                     self.queue.task_done()
             except asyncio.CancelledError:
                 logger.info(f"Worker {worker_id} cancelled")
@@ -110,7 +113,11 @@ class JobManager:
                 if not job:
                     logger.error(f"Job {job_id} not found in database")
                     return
+                if job.status == "cancelled":
+                    logger.info("Skipping cancelled job %s", job_id)
+                    return
                 is_pdf_studio_job = job.input_filename == "__pdf_studio__"
+                is_pipeline_job = job.tool_used == "pipeline"
                 logger.info(f"Job {job_id} details: input_format={job.input_format}, output_format={job.output_format}, input_file={job.input_filename}")
                 job.status = "processing"
                 job.started_at = datetime.utcnow()
@@ -119,7 +126,10 @@ class JobManager:
                 s.refresh(job)
 
             if is_pdf_studio_job:
-                await self._process_pdf_studio(job_uuid, job)
+                await asyncio.to_thread(self._process_pdf_studio, job_uuid, job)
+                return
+            if is_pipeline_job:
+                await asyncio.to_thread(self._process_pipeline_job, job_uuid, job)
                 return
 
             # Get file paths
@@ -147,7 +157,7 @@ class JobManager:
 
             # Execute conversion
             logger.info(f"Job {job_id} starting conversion")
-            success = converter(input_path, output_path)
+            success = await asyncio.to_thread(converter, input_path, output_path)
             logger.info(f"Job {job_id} conversion result: {success}")
 
             # Update job status
@@ -184,7 +194,7 @@ class JobManager:
                 job_uuid = uuid.UUID(job_id) if isinstance(job_id, str) else job_id
                 with Session(engine) as s:
                     job = s.get(Job, job_uuid)
-                    if job:
+                    if job and job.status != "cancelled":
                         job.status = "failed"
                         job.error_message = str(e)
                         job.completed_at = datetime.utcnow()
@@ -193,7 +203,21 @@ class JobManager:
             except Exception as db_error:
                 logger.error(f"Failed to mark job {job_id} as failed: {str(db_error)}")
 
-    async def _process_pdf_studio(self, job_uuid: uuid.UUID, job: Job):
+    def _process_pipeline_job(self, job_uuid: uuid.UUID, job: Job):
+        from app.core.pipeline_engine import run_pipeline
+
+        input_path = settings.UPLOAD_DIR / str(job.id) / job.input_filename
+        job_dir = settings.TEMP_DIR / str(job.id)
+        with (job_dir / "pipeline.json").open(encoding="utf-8") as recipe_file:
+            definition = json.load(recipe_file)
+
+        result_dir = settings.RESULTS_DIR / str(job.id)
+        result_dir.mkdir(parents=True, exist_ok=True)
+        output_path = result_dir / job.output_filename
+        run_pipeline(definition, input_path, output_path, job_dir / "work")
+        self._complete_recipe_job(job_uuid, output_path, "pipeline")
+
+    def _process_pdf_studio(self, job_uuid: uuid.UUID, job: Job):
         """Apply a PDF Studio recipe and save its output in the standard results directory."""
         recipe_path = settings.TEMP_DIR / str(job.id) / "recipe.json"
         with recipe_path.open(encoding="utf-8") as recipe_file:
@@ -204,19 +228,22 @@ class JobManager:
         output_path = result_dir / job.output_filename
         _write_pdf_studio_output(recipe, output_path)
 
+        self._complete_recipe_job(job_uuid, output_path, "pdf_studio")
+
+    @staticmethod
+    def _complete_recipe_job(job_uuid: uuid.UUID, output_path, tool: str):
         with Session(engine) as session:
-            stored_job = session.get(Job, job_uuid)
-            if stored_job is None:
-                raise RuntimeError(f"PDF Studio job {job_uuid} disappeared during processing")
-            if stored_job.status == "cancelled":
+            job = session.get(Job, job_uuid)
+            if job is None:
+                raise RuntimeError(f"Job {job_uuid} disappeared during processing")
+            if job.status == "cancelled":
                 output_path.unlink(missing_ok=True)
                 return
-            stored_job.status = "completed"
-            stored_job.progress = 100
-            stored_job.started_at = stored_job.started_at or datetime.utcnow()
-            stored_job.completed_at = datetime.utcnow()
-            stored_job.tool_used = "pdf_studio"
-            session.add(stored_job)
+            job.status = "completed"
+            job.progress = 100
+            job.completed_at = datetime.utcnow()
+            job.tool_used = tool
+            session.add(job)
             session.commit()
 
     async def start(self):
@@ -227,19 +254,40 @@ class JobManager:
         for i in range(self.concurrency):
             task = asyncio.create_task(self._worker(i))
             self.workers.append(task)
+        self._retention_task = asyncio.create_task(self._retention_worker())
+
+    async def _retention_worker(self):
+        from app.core.job_retention import purge_expired_jobs
+
+        while self._running:
+            await asyncio.sleep(3600)
+            try:
+                await asyncio.to_thread(purge_expired_jobs)
+            except Exception:
+                logger.exception("Scheduled job retention cleanup failed")
 
     async def stop(self):
         self._running = False
+        if self._retention_task:
+            self._retention_task.cancel()
+            await asyncio.gather(self._retention_task, return_exceptions=True)
         # wait for queue to drain
-        await self.queue.join()
+        if self.queue is not None:
+            await self.queue.join()
         for w in self.workers:
             w.cancel()
+        await asyncio.gather(*self.workers, return_exceptions=True)
+        self.workers.clear()
 
     def enqueue(self, job_id: str):
         """Enqueue a job for processing (can be called from sync context)."""
         if self.queue is None:
             logger.error(f"Job manager not started, cannot enqueue job {job_id}")
             raise RuntimeError("Job manager not started")
+        if job_id in self._queued_ids:
+            logger.info("Job %s is already queued or processing", job_id)
+            return
+        self._queued_ids.add(job_id)
         logger.info(f"Enqueueing job {job_id}")
         self.queue.put_nowait(job_id)
 
