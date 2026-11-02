@@ -1,33 +1,81 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Download, Trash2, RefreshCw, CheckCircle, AlertCircle, Clock, Play } from 'lucide-react';
 import { conversionApi } from '../utils/api';
 import toast from 'react-hot-toast';
-import { formatDistanceToNow } from 'date-fns';
+
+function formatTimestamp(value) {
+  if (!value) return '';
+  const timestamp = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return 'Invalid timestamp';
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+  }).format(date);
+}
 
 export default function JobsPage() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
+  const [retention, setRetention] = useState('normal');
 
-  useEffect(() => {//change this later to only periodically poll while there are some jobs not in a terminal state
-    
-    fetchJobs();
-    const interval = setInterval(fetchJobs, 3000); 
-    return () => clearInterval(interval);
-  }, [filter]);
-
-
-  const fetchJobs = async () => {
+  const fetchJobs = useCallback(async () => {
     try {
       setLoading(true);
       const params = filter !== 'all' ? { status: filter } : {};
       const response = await conversionApi.listJobs(params);
       setJobs(response.results || []);
-      // setJobs(response.data.results || []);
     } catch (error) {
-      toast.error('Failed to fetch jobs');
+      toast.error(`Failed to fetch jobs: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  }, [filter]);
+
+  useEffect(() => {
+    conversionApi.getJobSettings()
+      .then((settings) => setRetention(settings.retention))
+      .catch((error) => toast.error(`Could not load job settings: ${error.message}`));
+  }, []);
+
+  useEffect(() => {
+    const initialFetch = window.setTimeout(fetchJobs, 0);
+    const interval = setInterval(fetchJobs, 3000);
+    return () => {
+      window.clearTimeout(initialFetch);
+      clearInterval(interval);
+    };
+  }, [fetchJobs]);
+
+  const updateRetention = async (value) => {
+    try {
+      const result = await conversionApi.updateJobSettings(value);
+      setRetention(result.retention);
+      if (result.purged) {
+        toast.success(`${result.purged} expired job(s) removed`);
+        fetchJobs();
+      } else {
+        toast.success('Job history setting saved');
+      }
+    } catch (error) {
+      toast.error(`Could not save job setting: ${error.message}`);
+    }
+  };
+
+  const handleDelete = async (jobId) => {
+    if (!confirm('Delete this job and its files?')) return;
+    try {
+      await conversionApi.deleteJob(jobId);
+      setJobs((current) => current.filter((job) => job.id !== jobId));
+      toast.success('Job deleted');
+    } catch (error) {
+      toast.error(`Failed to delete job: ${error.message}`);
     }
   };
 
@@ -44,7 +92,7 @@ export default function JobsPage() {
       link.parentElement.removeChild(link);
       toast.success('Download started');
     } catch (error) {
-      toast.error('Failed to download file');
+      toast.error(`Failed to download file: ${error.message}`);
     }
   };
 
@@ -56,7 +104,7 @@ export default function JobsPage() {
       toast.success('Job cancelled');
       fetchJobs();
     } catch (error) {
-      toast.error('Failed to cancel job');
+      toast.error(`Failed to cancel job: ${error.message}`);
     }
   };
 
@@ -99,7 +147,7 @@ export default function JobsPage() {
     <div className="max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Conversion Jobs</h1>
+          <h1 className="text-3xl font-bold text-gray-900">My Conversion Jobs</h1>
           <p className="text-gray-600 mt-2">Track and manage your file conversions</p>
         </div>
         <button
@@ -112,9 +160,27 @@ export default function JobsPage() {
         </button>
       </div>
 
+      <section className="mb-6 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-4">
+        <label htmlFor="job-retention" className="font-medium text-gray-800">Remember previous jobs</label>
+        <select
+          id="job-retention"
+          value={retention}
+          onChange={(event) => updateRetention(event.target.value)}
+          className="rounded border border-gray-300 bg-white px-3 py-2 text-gray-800"
+        >
+          <option value="normal">Normal / 30 days</option>
+          <option value="24h">24 hours</option>
+          <option value="7d">7 days</option>
+          <option value="60d">60 days</option>
+          <option value="90d">90 days</option>
+          <option value="forever">Forever</option>
+        </select>
+        <span className="text-sm text-gray-500">Completed, failed, and cancelled jobs are removed after this period.</span>
+      </section>
+
       {/* Filter Tabs */}
       <div className="mb-6 flex gap-2 flex-wrap">
-        {['all', 'pending', 'processing', 'completed', 'failed'].map((status) => (
+        {['all', 'pending', 'processing', 'completed', 'failed', 'cancelled'].map((status) => (
           <button
             key={status}
             onClick={() => setFilter(status)}
@@ -163,15 +229,14 @@ export default function JobsPage() {
                       />
                     </div>
                   )}
-
                   {/* Status and Time */}
                   <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
                     <span className={`px-3 py-1 rounded-full border ${getStatusColor(job.status)}`}>
                       {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
                     </span>
-                    <span>Created: {formatDistanceToNow(new Date(job.created_at), { addSuffix: true })}</span>
+                    <span title={Intl.DateTimeFormat().resolvedOptions().timeZone}>Created: {formatTimestamp(job.created_at)}</span>
                     {job.completed_at && (
-                      <span>Completed: {formatDistanceToNow(new Date(job.completed_at), { addSuffix: true })}</span>
+                      <span title={Intl.DateTimeFormat().resolvedOptions().timeZone}>Completed: {formatTimestamp(job.completed_at)}</span>
                     )}
                   </div>
 
@@ -207,6 +272,15 @@ export default function JobsPage() {
                       onClick={() => handleCancel(job.id)}
                       className="btn-danger flex items-center gap-1"
                       title="Cancel job"
+                    >
+                      <Trash2 size={20} />
+                    </button>
+                  )}
+                  {['completed', 'failed', 'cancelled'].includes(job.status) && (
+                    <button
+                      onClick={() => handleDelete(job.id)}
+                      className="btn-danger flex items-center gap-1"
+                      title="Delete job and files"
                     >
                       <Trash2 size={20} />
                     </button>

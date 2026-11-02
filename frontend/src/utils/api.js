@@ -54,6 +54,19 @@ export const conversionApi = {
 
   cancelJob: (jobId) =>
     fetchWrapper(`/jobs/${jobId}/cancel`, { method: 'POST' }),
+
+  deleteJob: (jobId) =>
+    fetchWrapper(`/jobs/${jobId}`, { method: 'DELETE' }),
+
+  getJobSettings: () =>
+    fetchWrapper('/jobs/settings'),
+
+  updateJobSettings: (retention) =>
+    fetchWrapper('/jobs/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ retention }),
+    }),
 };
 
 export const processingApi = {
@@ -95,6 +108,48 @@ export const processingApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(recipePayload),
     }),
+
+  getPipelineOperations: () =>
+    fetchWrapper('/processing/pipelines/operations'),
+
+  getVideoInfo: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetchWrapper('/processing/pipelines/video-info', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
+  listPipelines: () =>
+    fetchWrapper('/processing/pipelines'),
+
+  savePipeline: (definition) =>
+    fetchWrapper('/processing/pipelines', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(definition),
+    }),
+
+  deletePipeline: (pipelineId) =>
+    fetchWrapper(`/processing/pipelines/${pipelineId}`, { method: 'DELETE' }),
+
+  validatePipeline: (definition) =>
+    fetchWrapper('/processing/pipelines/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(definition),
+    }),
+
+  runPipeline: (files, definition) => {
+    const formData = new FormData();
+    files.forEach((file) => formData.append('files', file));
+    formData.append('pipeline', JSON.stringify(definition));
+    return fetchWrapper('/processing/pipelines/run', {
+      method: 'POST',
+      body: formData,
+    });
+  },
 };
 
 export default fetchWrapper;
