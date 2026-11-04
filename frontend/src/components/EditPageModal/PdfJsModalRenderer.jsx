@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import * as pdfjs from "pdfjs-dist";
+import pdfjs from "../../utils/pdfjs";
 
 export const PdfJsModalRenderer = ({ fileUrl, pageIndex, rotation, cropMarginPercent = 0 }) => {
     const canvasRef = useRef(null);

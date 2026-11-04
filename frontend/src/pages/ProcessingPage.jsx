@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, defaultDropAnimationSideEffects } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, rectSortingStrategy } from "@dnd-kit/sortable";
-import * as pdfjs from "pdfjs-dist";
 import { Upload, Trash2, Layers, Info } from "lucide-react";
 import toast from "react-hot-toast";
 import { v4 as uuidv4 } from "uuid";
@@ -14,10 +13,7 @@ import { EditPageModal } from "../components/EditPageModal/EditPageModal";
 import { arrayMoveMultiple } from "../utils/pdfUtils";
 
 import { processingApi } from '../utils/api';
-
-// worker that needs to be specified for pdfjs, didnt work cuz didn't import properly
-import worker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-pdfjs.GlobalWorkerOptions.workerSrc = worker;
+import pdfjs from '../utils/pdfjs';
 
 const dropAnimation = {
     sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.3' } } }),

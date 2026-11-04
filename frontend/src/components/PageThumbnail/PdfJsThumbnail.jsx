@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import * as pdfjs from "pdfjs-dist";
+import pdfjs from "../../utils/pdfjs";
 
 const PdfJsThumbnail = React.memo(({ fileUrl, pageIndex, rotation, width = 180, isDragging, isOverlay }) => {
     const canvasRef = useRef(null);
@@ -29,7 +29,7 @@ const PdfJsThumbnail = React.memo(({ fileUrl, pageIndex, rotation, width = 180, 
 
                 await page.render({ canvasContext: context, viewport: viewport }).promise;
             } catch (error) {
-                if (!destroyed && canvas) { /* Console logs removed for compactness */ }
+                if (!destroyed) console.error("Failed to render PDF thumbnail", error);
             }
         };
 
