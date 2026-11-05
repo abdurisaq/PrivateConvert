@@ -7,6 +7,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -59,6 +61,39 @@ def get_npm_command() -> Optional[str]:
     if sys.platform == "win32":
         return shutil.which("npm.cmd") or shutil.which("npm")
     return shutil.which("npm")
+
+
+def ensure_backend_dependencies(python_exe: str) -> bool:
+    check = subprocess.run(
+        [
+            python_exe,
+            "-c",
+            (
+                "import importlib.util, sys; "
+                "modules = ('fastapi', 'uvicorn', 'sqlalchemy', 'sqlmodel', "
+                "'pydantic_settings', 'multipart', 'pypdf', 'PIL'); "
+                "missing = [name for name in modules if importlib.util.find_spec(name) is None]; "
+                "print(', '.join(missing)); sys.exit(bool(missing))"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode == 0:
+        return True
+
+    requirements = get_project_root() / "backend" / "requirements.txt"
+    log_service(
+        "BACKEND",
+        f"Missing Python dependencies: {check.stdout.strip() or check.stderr.strip()}",
+        "ERROR",
+    )
+    log_service(
+        "BACKEND",
+        f'Install them with: "{python_exe}" -m pip install -r "{requirements}"',
+        "ERROR",
+    )
+    return False
 
 
 def ensure_frontend_built(frontend_dir: Path, static_dir: Path) -> bool:
@@ -164,6 +199,20 @@ def stream_process_output(
         log_service(service_name, line.strip())
 
 
+def wait_for_backend(process: subprocess.Popen, timeout: float = 30) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=1) as response:
+                if response.status == 200:
+                    return True
+        except (urllib.error.URLError, TimeoutError):
+            time.sleep(0.25)
+    return False
+
+
 def cleanup_processes(
     processes: List[ManagedProcess], stop_event: threading.Event
 ):
@@ -196,13 +245,16 @@ def main():
     if not frontend_dir.is_dir():
         log_service("STARTUP", f"Frontend directory not found: {frontend_dir}", "ERROR")
         sys.exit(1)
+    python_exe = get_venv_python()
+    if not ensure_backend_dependencies(python_exe):
+        sys.exit(1)
     if not ensure_frontend_built(frontend_dir, static_dir):
         sys.exit(1)
 
     processes: List[ManagedProcess] = []
     stop_event = threading.Event()
     try:
-        backend_proc = start_backend(get_venv_python(), backend_dir)
+        backend_proc = start_backend(python_exe, backend_dir)
         if backend_proc is None:
             sys.exit(1)
         processes.append(("BACKEND", backend_proc))
@@ -213,6 +265,10 @@ def main():
             daemon=True,
         )
         output_thread.start()
+        if not wait_for_backend(backend_proc):
+            log_service("BACKEND", "Application did not become ready; see the error above.", "ERROR")
+            cleanup_processes(processes, stop_event)
+            sys.exit(1)
         print(f"\n{Colors.BOLD}{Colors.GREEN}Private Converter is ready{Colors.RESET}")
         print(f"Open {Colors.CYAN}http://127.0.0.1:8000/{Colors.RESET}")
         print(f"API docs: {Colors.CYAN}http://127.0.0.1:8000/docs{Colors.RESET}")
